@@ -7,12 +7,11 @@ namespace DortGok.Presentation
 {
     /// <summary>
     /// Gri kutu arayüzü (IMGUI): tur çubuğu, oyuncular, el, seçili birim eylemleri, Floop ve ulti hedefleme,
-    /// olay günlüğü. Ulti seçilince şekil tahtada fareyle gezdirilir; geçersiz kareler kırmızı yanar (GDD Bölüm 4).
+    /// olay günlüğü. Girdi mantığı InteractionController'dadır; bu sınıf yalnızca çizer ve tıklamaları iletir.
+    /// Ulti seçilince şekil tahtada fareyle gezdirilir; geçersiz kareler kırmızı yanar (GDD Bölüm 4).
     /// </summary>
     public sealed class HudView : MonoBehaviour
     {
-        private enum Mode { None, PlayCard, Move, Attack, Retreat, Floop, Ulti }
-
         private sealed class FloatText
         {
             public Vector3 World;
@@ -22,25 +21,9 @@ namespace DortGok.Presentation
         }
 
         private GameBootstrap _g;
-        private Mode _mode;
-        private int _card = -1;
-        private int _selected = -1;
-        private int _floopSource = -1;
-        private string _ulti;
-        private int _pendingEntity = -1;
-        private Coord _pendingTile = Coord.None;
-        private readonly List<int> _tutulma = new List<int>();
-
-        // Hedefleme seçenekleri
-        private bool _pull = true;
-        private int _forceDistance = 2;
-        private Coord _direction = Coord.Right;
-        private bool _fireRect;
-        private bool _fireVertical;
-        private int _fireLength = 6;
+        private InteractionController _input;
 
         private Coord _hover = Coord.None;
-        private string _status;
         private float _statusUntil;
         private string _banner;
         private float _bannerUntil;
@@ -63,41 +46,19 @@ namespace DortGok.Presentation
         public void Bind(GameBootstrap g)
         {
             _g = g;
+            _input = new InteractionController(null, c => _g.Submit(c), seat => _g.IsHuman(seat));
+            _input.StatusChanged += m => _statusUntil = Time.time + 4f;
             g.Queue.Played += OnPlayed;
             g.MatchStarted += ResetUi;
         }
 
         private void ResetUi()
         {
-            CancelMode();
-            _selected = -1;
+            _input.Engine = _g.Engine;
+            _input.Reset();
             _log.Clear();
             _floats.Clear();
             _banner = null;
-        }
-
-        private void CancelMode()
-        {
-            _mode = Mode.None;
-            _card = -1;
-            _floopSource = -1;
-            _ulti = null;
-            _pendingEntity = -1;
-            _pendingTile = Coord.None;
-            _tutulma.Clear();
-        }
-
-        private void Flash(string message, float seconds = 3f)
-        {
-            _status = message;
-            _statusUntil = Time.time + seconds;
-        }
-
-        private void Submit(Command c, bool keepMode = false)
-        {
-            var r = _g.Submit(c);
-            if (!r.Ok) Flash(r.Error);
-            else if (!keepMode) CancelMode();
         }
 
         // ---------------- Olaylar ----------------
@@ -160,301 +121,28 @@ namespace DortGok.Presentation
         {
             board.Overlay.Clear();
             board.Hover = _hover;
-            board.SelectedEntity = _selected;
             var e = E;
             if (e == null) return;
-            var s = e.State;
-            int me = s.Current;
-            board.Viewer = _g.IsHuman(me) ? me : -1;
-            if (s.IsOver || !_g.IsHuman(me) || s.Phase != Phase.AnaFaz) return;
+            if (_input.Engine != e) _input.Engine = e;
+            board.SelectedEntity = _input.Selected;
+            board.Viewer = _g.IsHuman(e.State.Current) ? e.State.Current : -1;
+            foreach (var kv in _input.Highlights(_hover))
+                board.Overlay[kv.Key] = ColorOf(kv.Value);
+        }
 
-            switch (_mode)
+        private static Color ColorOf(Highlight h)
+        {
+            switch (h)
             {
-                case Mode.None:
-                case Mode.Move:
-                case Mode.Attack:
-                {
-                    if (!s.Units.TryGetValue(_selected, out var u) || u.ActingPlayer != me) break;
-                    if (_mode != Mode.Attack && CanMoveNow(u))
-                        foreach (var kv in e.Actions.ReachableFor(u))
-                            board.Overlay[kv.Key] = kv.Value.EstimatedDamage > 0 ? Color.Lerp(Palette.Reach, Palette.Target, 0.45f) : Palette.Reach;
-                    if (_mode != Mode.Move && CanAttackNow(u))
-                        foreach (var t in e.Actions.AttackTargets(u)) Mark(board, t, Palette.Target);
-                    break;
-                }
-                case Mode.Retreat:
-                {
-                    if (!s.Units.TryGetValue(_selected, out var u)) break;
-                    foreach (var kv in e.Grid.Reachable(u, Mathf.Min(2, e.Stats.Speed(u)))) board.Overlay[kv.Key] = Palette.Reach;
-                    break;
-                }
-                case Mode.PlayCard:
-                {
-                    var card = s.Players[me].Hand.FirstOrDefault(h => h.InstanceId == _card);
-                    if (card == null) break;
-                    if (card.Def.Type == CardType.Birim) foreach (var c in e.Cards.DeployTiles(me)) board.Overlay[c] = Palette.Deploy;
-                    else if (card.Def.Type == CardType.Yapi) foreach (var c in e.Cards.BuildTiles(me)) board.Overlay[c] = Palette.Deploy;
-                    else foreach (var u in s.UnitsOf(me).Where(x => e.Cards.CanAttachTo(me, card.Def, x))) board.Overlay[u.Pos] = Palette.Deploy;
-                    break;
-                }
-                case Mode.Floop:
-                    FloopOverlay(board, me);
-                    break;
-                case Mode.Ulti:
-                    UltiOverlay(board, me);
-                    break;
+                case Highlight.Reach: return Palette.Reach;
+                case Highlight.ReachDanger: return Color.Lerp(Palette.Reach, Palette.Target, 0.45f);
+                case Highlight.Target: return Palette.Target;
+                case Highlight.Deploy: return Palette.Deploy;
+                case Highlight.Ally: return Palette.Reach;
+                case Highlight.PreviewOk: return Palette.PreviewOk;
+                case Highlight.PreviewBad: return Palette.PreviewBad;
+                default: return Palette.Selected;
             }
-        }
-
-        private void Mark(BoardView board, Entity ent, Color color)
-        {
-            switch (ent)
-            {
-                case Unit u: board.Overlay[u.Pos] = color; break;
-                case Structure st: board.Overlay[st.Pos] = color; break;
-                case Headquarters hq: foreach (var t in hq.Tiles) board.Overlay[t] = color; break;
-            }
-        }
-
-        private bool CanMoveNow(Unit u)
-        {
-            if (u.ControlledBy >= 0 && u.Owner != u.ControlledBy) return u.ControlMoveLeft;
-            return !u.Moved && (u.En >= 1 || E.Actions.NextMoveIsFree(u));
-        }
-
-        private bool CanAttackNow(Unit u)
-        {
-            if (u.ControlledBy >= 0 && u.Owner != u.ControlledBy) return u.ControlAttackLeft;
-            return !u.Attacked && u.En >= 1;
-        }
-
-        private void FloopOverlay(BoardView board, int me)
-        {
-            var e = E;
-            var src = e.State.GetEntity(_floopSource);
-            if (src == null) return;
-            var def = src is Unit su ? su.Def : ((Structure)src).Def;
-            foreach (var tile in Board.AllTiles())
-            {
-                var spec = FloopSpecFor(def.Floop.Kind, tile, preview: true);
-                if (spec == null) continue;
-                if (e.Validate(new FloopCommand { Player = me, SourceId = _floopSource, Target = spec }) == null)
-                    board.Overlay[tile] = def.Floop.Kind == FloopKind.Sifa || (def.Floop.Kind == FloopKind.RuzgarlaSavur && _pendingEntity < 0) ? Palette.Reach : Palette.Target;
-            }
-        }
-
-        private void UltiOverlay(BoardView board, int me)
-        {
-            var e = E;
-            var d = UltiCatalog.Get(_ulti);
-            // Tıklanabilir hedefler (varlık hedefli ultiler)
-            if (d.Targeting == UltiTargeting.EnemyEntity || d.Targeting == UltiTargeting.OwnUnit ||
-                (d.Targeting == UltiTargeting.OwnUnitToTile && _pendingEntity < 0) || d.Targeting == UltiTargeting.EnemyQuadrantUnits)
-            {
-                foreach (var tile in Board.AllTiles())
-                {
-                    var spec = UltiSpecFor(d, tile, preview: true);
-                    if (spec != null && ValidTarget(d, me, spec)) board.Overlay[tile] = Palette.PreviewOk;
-                }
-                foreach (var id in _tutulma)
-                    if (e.State.Units.TryGetValue(id, out var tu)) board.Overlay[tu.Pos] = Palette.Selected;
-                return;
-            }
-            if (!_hover.IsOnBoard) return;
-            var hoverSpec = UltiSpecFor(d, _hover, preview: true);
-            if (hoverSpec == null) return;
-            bool ok = e.Validate(new CastUltiCommand { Player = me, UltiId = d.Id, Target = hoverSpec }) == null;
-            foreach (var t in e.Ultis.AreaTiles(d, me, hoverSpec))
-                if (t.IsOnBoard) board.Overlay[t] = ok ? Palette.PreviewOk : Palette.PreviewBad;
-            if (_pendingTile.IsOnBoard) board.Overlay[_pendingTile] = Palette.Selected;
-        }
-
-        private bool ValidTarget(UltiDef d, int me, TargetSpec spec)
-        {
-            if (d.Targeting == UltiTargeting.EnemyQuadrantUnits)
-            {
-                if (!E.State.Units.TryGetValue(spec.EntityId, out var u)) return false;
-                var probe = new TargetSpec { Player = Board.QuadrantOf(u.Pos), EntityIds = new List<int> { u.Id } };
-                return E.Ultis.ValidateTarget(d, me, probe) == null;
-            }
-            return E.Ultis.ValidateTarget(d, me, spec) == null;
-        }
-
-        // ---------------- Hedef tanımları ----------------
-
-        private TargetSpec FloopSpecFor(FloopKind kind, Coord tile, bool preview)
-        {
-            var ent = E.EntityAt(tile);
-            switch (kind)
-            {
-                case FloopKind.CekIt:
-                    return ent != null ? new TargetSpec { EntityId = ent.Id, Pull = _pull, Amount = _forceDistance } : null;
-                case FloopKind.Isaretle:
-                case FloopKind.Sifa:
-                case FloopKind.IsikOku:
-                    return ent != null ? TargetSpec.AtEntity(ent.Id) : null;
-                case FloopKind.MancinikAtisi:
-                    return TargetSpec.AtTile(tile);
-                case FloopKind.RuzgarlaSavur:
-                    if (_pendingEntity < 0)
-                    {
-                        if (!(ent is Unit)) return null;
-                        // İlk adım: bitişik dost birim; hedef kare olarak kendi karesinin yanındaki boş kareyi deneriz.
-                        var probe = Board.Around(tile, 1, false).FirstOrDefault(c => E.Grid.IsEmpty(c));
-                        return probe.IsOnBoard || !preview ? new TargetSpec { EntityId = ent.Id, Tile = probe } : null;
-                    }
-                    return new TargetSpec { EntityId = _pendingEntity, Tile = tile };
-                default:
-                    return null;
-            }
-        }
-
-        private static Coord TopLeftFor(Coord c, int size) => new Coord(c.Row - (size - 1) / 2, c.Col - (size - 1) / 2);
-
-        private List<Coord> FireTiles(Coord c)
-        {
-            if (_fireRect) return Board.Rect(c, _fireVertical ? 3 : 2, _fireVertical ? 2 : 3);
-            var list = new List<Coord>();
-            for (int i = 0; i < _fireLength; i++) list.Add(_fireVertical ? new Coord(c.Row + i, c.Col) : new Coord(c.Row, c.Col + i));
-            return list;
-        }
-
-        private TargetSpec UltiSpecFor(UltiDef d, Coord tile, bool preview)
-        {
-            var ent = E.EntityAt(tile);
-            switch (d.Targeting)
-            {
-                case UltiTargeting.EnemyPlayer:
-                case UltiTargeting.EnemyQuadrant:
-                    return TargetSpec.AtPlayer(Board.QuadrantOf(tile));
-                case UltiTargeting.EnemyQuadrantUnits:
-                    return ent is Unit ? TargetSpec.AtEntity(ent.Id) : null;
-                case UltiTargeting.OwnUnit:
-                    return ent is Unit ? TargetSpec.AtEntity(ent.Id) : null;
-                case UltiTargeting.OwnUnitToTile:
-                    if (_pendingEntity < 0) return ent is Unit ? new TargetSpec { EntityId = ent.Id, Tile = FirstLegalTeleportTile(ent.Id) } : null;
-                    return new TargetSpec { EntityId = _pendingEntity, Tile = tile };
-                case UltiTargeting.AreaAny:
-                case UltiTargeting.AreaEnemyQuadrant:
-                    return new TargetSpec { Tile = TopLeftFor(tile, d.Size), Direction = _direction };
-                case UltiTargeting.TilesEnemyQuadrant:
-                    return new TargetSpec { Tiles = FireTiles(tile) };
-                case UltiTargeting.CenterAny:
-                case UltiTargeting.OwnDeployTile:
-                    return TargetSpec.AtTile(tile);
-                case UltiTargeting.EnemyEntity:
-                    return ent != null ? TargetSpec.AtEntity(ent.Id) : null;
-                case UltiTargeting.TwoTiles:
-                    return _pendingTile.IsOnBoard ? new TargetSpec { Tile = _pendingTile, Tile2 = tile } : new TargetSpec { Tile = tile, Tile2 = FirstEmptyOtherThan(tile) };
-                default:
-                    return TargetSpec.None;
-            }
-        }
-
-        private Coord FirstLegalTeleportTile(int unitId)
-        {
-            var d = UltiCatalog.Get(UltiCatalog.KayanYildiz);
-            foreach (var c in Board.AllTiles())
-                if (E.Ultis.ValidateTarget(d, E.State.Current, new TargetSpec { EntityId = unitId, Tile = c }) == null) return c;
-            return Coord.None;
-        }
-
-        private Coord FirstEmptyOtherThan(Coord tile) => Board.AllTiles().FirstOrDefault(c => c != tile && E.Grid.IsEmpty(c));
-
-        // ---------------- Tahta tıklaması ----------------
-
-        private void OnBoardClick(Coord c)
-        {
-            var e = E;
-            var s = e.State;
-            int me = s.Current;
-            var ent = e.EntityAt(c);
-            bool myTurn = _g.IsHuman(me) && !s.IsOver && s.Phase == Phase.AnaFaz;
-
-            if (!myTurn || _mode == Mode.None)
-            {
-                if (myTurn && s.Units.TryGetValue(_selected, out var sel) && sel.ActingPlayer == me)
-                {
-                    if (ent != null && ent.Id != sel.Id && CanAttackNow(sel) && e.Actions.AttackTargets(sel).Contains(ent))
-                    {
-                        Submit(new AttackCommand { UnitId = sel.Id, TargetId = ent.Id }, keepMode: true);
-                        return;
-                    }
-                    if (ent == null && CanMoveNow(sel) && e.Actions.ReachableFor(sel).ContainsKey(c))
-                    {
-                        Submit(new MoveCommand { UnitId = sel.Id, To = c }, keepMode: true);
-                        return;
-                    }
-                }
-                _selected = ent != null ? ent.Id : -1;
-                return;
-            }
-
-            switch (_mode)
-            {
-                case Mode.Move:
-                    Submit(new MoveCommand { UnitId = _selected, To = c });
-                    break;
-                case Mode.Retreat:
-                    Submit(new RetreatCommand { UnitId = _selected, To = c });
-                    break;
-                case Mode.Attack:
-                    if (ent != null) Submit(new AttackCommand { UnitId = _selected, TargetId = ent.Id });
-                    break;
-                case Mode.PlayCard:
-                {
-                    var card = s.Players[me].Hand.FirstOrDefault(h => h.InstanceId == _card);
-                    if (card == null) { CancelMode(); break; }
-                    var target = card.Def.Type == CardType.Gelistirme ? TargetSpec.AtEntity(ent != null ? ent.Id : -1) : TargetSpec.AtTile(c);
-                    Submit(new PlayCardCommand { CardInstanceId = _card, Target = target });
-                    break;
-                }
-                case Mode.Floop:
-                {
-                    var src = s.GetEntity(_floopSource);
-                    if (src == null) { CancelMode(); break; }
-                    var kind = src is Unit su ? su.Def.Floop.Kind : ((Structure)src).Def.Floop.Kind;
-                    if (kind == FloopKind.RuzgarlaSavur && _pendingEntity < 0)
-                    {
-                        if (ent is Unit) _pendingEntity = ent.Id;
-                        Flash("Şimdi 4 kare içinde boş bir kare seç.");
-                        break;
-                    }
-                    var spec = FloopSpecFor(kind, c, preview: false);
-                    if (spec != null) Submit(new FloopCommand { SourceId = _floopSource, Target = spec });
-                    break;
-                }
-                case Mode.Ulti:
-                    UltiClick(c, ent);
-                    break;
-            }
-        }
-
-        private void UltiClick(Coord c, Entity ent)
-        {
-            var d = UltiCatalog.Get(_ulti);
-            switch (d.Targeting)
-            {
-                case UltiTargeting.EnemyQuadrantUnits:
-                    if (ent is Unit u)
-                    {
-                        if (_tutulma.Contains(u.Id)) _tutulma.Remove(u.Id);
-                        else if (_tutulma.Count < 2) _tutulma.Add(u.Id);
-                    }
-                    return;
-                case UltiTargeting.OwnUnitToTile:
-                    if (_pendingEntity < 0)
-                    {
-                        if (ent is Unit) { _pendingEntity = ent.Id; Flash("Şimdi ışınlanacak boş kareyi seç."); }
-                        return;
-                    }
-                    break;
-                case UltiTargeting.TwoTiles:
-                    if (!_pendingTile.IsOnBoard) { _pendingTile = c; Flash("İkinci geçidin karesini seç."); return; }
-                    break;
-            }
-            var spec = UltiSpecFor(d, c, preview: false);
-            if (spec != null) Submit(new CastUltiCommand { UltiId = d.Id, Target = spec });
         }
 
         // ---------------- Çizim ----------------
@@ -476,6 +164,7 @@ namespace DortGok.Presentation
         {
             var e = E;
             if (e == null) return;
+            if (_input.Engine != e) _input.Engine = e;
             EnsureStyles();
             var s = e.State;
             _panels.Clear();
@@ -518,7 +207,7 @@ namespace DortGok.Presentation
             var ev = Event.current;
             if (ev.type == EventType.KeyDown && ev.keyCode == KeyCode.Escape)
             {
-                CancelMode();
+                _input.Cancel();
                 ev.Use();
                 return;
             }
@@ -532,13 +221,13 @@ namespace DortGok.Presentation
             if (ev.type != EventType.MouseDown || OverPanel(ev.mousePosition)) return;
             if (ev.button == 1)
             {
-                CancelMode();
+                _input.Cancel();
                 ev.Use();
                 return;
             }
             if (ev.button == 0 && _hover.IsOnBoard)
             {
-                OnBoardClick(_hover);
+                _input.Click(_hover);
                 ev.Use();
             }
         }
@@ -585,7 +274,7 @@ namespace DortGok.Presentation
             }
             if (_hover.IsOnBoard)
             {
-                var tip = TileTooltip(_hover);
+                var tip = _input.Tooltip(_hover);
                 if (!string.IsNullOrEmpty(tip))
                 {
                     var mp = Event.current.mousePosition;
@@ -608,24 +297,6 @@ namespace DortGok.Presentation
             GUI.color = old;
         }
 
-        private string TileTooltip(Coord c)
-        {
-            var e = E;
-            var parts = new List<string> { $"<b>{c}</b> · çeyrek: {Names.Of(e.State.Players[Board.QuadrantOf(c)].Faction)}" + (Board.IsAltar(c) ? " · Gök Sunağı" : "") };
-            foreach (var fx in e.Effects.At(c))
-                parts.Add($"{fx.Def.Name} ({fx.Def.Layer}, {fx.RemainingTurns} tur, {e.State.Players[fx.Caster].Name})");
-            if (e.State.Delayed.Any(d => d.Tiles.Contains(c))) parts.Add("<color=#ff5040>Meteor düşecek!</color>");
-            var ent = e.EntityAt(c);
-            if (ent != null) parts.Add(e.EntityName(ent));
-            if (_mode == Mode.None && e.State.Units.TryGetValue(_selected, out var sel) && sel.ActingPlayer == e.State.Current)
-            {
-                var reach = e.Actions.ReachableFor(sel);
-                if (reach.TryGetValue(c, out var path) && path.EstimatedDamage > 0)
-                    parts.Add($"<color=#ff8060>Yol hasarı: {path.EstimatedDamage}</color>");
-            }
-            return string.Join("\n", parts);
-        }
-
         private void DrawTopBar(GameState s)
         {
             var rect = new Rect(0, 0, Screen.width, 40);
@@ -639,12 +310,11 @@ namespace DortGok.Presentation
                 _text);
 
             float x = Screen.width - 10;
-            bool myTurn = _g.IsHuman(s.Current) && !s.IsOver && s.Phase == Phase.AnaFaz;
-            GUI.enabled = myTurn;
+            GUI.enabled = _input.MyTurn;
             x -= 120;
-            if (GUI.Button(new Rect(x, 6, 115, 28), "Turu Bitir")) { Submit(new EndTurnCommand()); _selected = -1; }
+            if (GUI.Button(new Rect(x, 6, 115, 28), "Turu Bitir")) _input.EndTurn();
             x -= 150;
-            if (GUI.Button(new Rect(x, 6, 145, 28), $"Ek Kart Çek ({E.Rules.ExtraDrawCost} AP)")) Submit(new DrawExtraCommand(), keepMode: true);
+            if (GUI.Button(new Rect(x, 6, 145, 28), $"Ek Kart Çek ({E.Rules.ExtraDrawCost} AP)")) _input.DrawExtra();
             GUI.enabled = true;
             x -= 105;
             if (GUI.Button(new Rect(x, 6, 100, 28), "Yeni Maç")) _g.NewMatch(_g.Seed);
@@ -705,15 +375,15 @@ namespace DortGok.Presentation
             GUI.Box(rect, GUIContent.none);
             GUILayout.BeginArea(new Rect(rect.x + 8, rect.y + 6, rect.width - 16, rect.height - 12));
             int me = s.Current;
-            bool myTurn = _g.IsHuman(me) && !s.IsOver && s.Phase == Phase.AnaFaz;
+            bool myTurn = _input.MyTurn;
 
             DrawSelection(s, me, myTurn);
             GUILayout.Space(6);
             if (myTurn) DrawUltis(s, me);
             if (myTurn) DrawModeOptions(s, me);
 
-            if (!string.IsNullOrEmpty(_status) && Time.time < _statusUntil)
-                GUILayout.Label($"<color=#ffb070>{_status}</color>", _text);
+            if (!string.IsNullOrEmpty(_input.Status) && Time.time < _statusUntil)
+                GUILayout.Label($"<color=#ffb070>{_input.Status}</color>", _text);
 
             GUILayout.Label("Olay günlüğü", _title);
             _logScroll = GUILayout.BeginScrollView(_logScroll, GUILayout.ExpandHeight(true));
@@ -724,7 +394,7 @@ namespace DortGok.Presentation
 
         private void DrawSelection(GameState s, int me, bool myTurn)
         {
-            var ent = s.GetEntity(_selected);
+            var ent = s.GetEntity(_input.Selected);
             if (ent == null)
             {
                 GUILayout.Label(myTurn ? "Bir birim seç ya da elden kart oyna. Esc / sağ tık: iptal." : "Bot oynuyor…", _small);
@@ -737,42 +407,30 @@ namespace DortGok.Presentation
                 {
                     var fc = Palette.Faction(s.Players[u.Owner].Faction);
                     GUILayout.Label($"<color=#{Hex(fc)}><b>{u.Def.Name}</b></color> ({s.Players[u.Owner].Name})", _title);
-                    bool own = u.ActingPlayer == me && myTurn;
-                    string stats = u.IsIllusion && !(own && u.Owner == me)
-                        ? $"SAL {u.Def.Atk} · CAN {u.Def.Hp} · HIZ {u.Def.Speed} · MNZ {u.Def.Range}"
-                        : $"SAL {e.Stats.Atk(u)} · CAN {u.Hp}/{e.Stats.MaxHp(u)} · HIZ {e.Stats.Speed(u)} · MNZ {e.Stats.Range(u)} · EN {u.En} · Zırh {e.Stats.Armor(u)}";
-                    GUILayout.Label(stats, _text);
-                    var tags = new List<string>();
-                    if (u.Flying) tags.Add("Uçan");
-                    if (u.IsIllusion && u.Owner == me) tags.Add("<color=#ff66ff>İllüzyon (yalnızca sen görüyorsun)</color>");
-                    if (e.IsShadowed(u)) tags.Add("Gölge");
-                    foreach (var st in u.Statuses) if (st.Kind != StatusKind.Shadow) tags.Add(Names.Of(st.Kind));
-                    if (u.ControlledBy >= 0) tags.Add("Tutulma: " + s.Players[u.ControlledBy].Name);
-                    if (u.WeaponCardId != null) tags.Add("Silah: " + CardCatalog.Get(u.WeaponCardId).Name);
-                    if (u.ArmorCardId != null) tags.Add("Zırh: " + CardCatalog.Get(u.ArmorCardId).Name);
+                    GUILayout.Label(_input.UnitSummary(u), _text);
+                    var tags = _input.UnitTags(u);
                     if (tags.Count > 0) GUILayout.Label(string.Join(" · ", tags), _small);
                     if (!string.IsNullOrEmpty(u.Def.Text)) GUILayout.Label(u.Def.Text, _small);
                     if (u.Def.HasFloop) GUILayout.Label($"<b>Floop ({u.Def.Floop.Cost} AP): {u.Def.Floop.Name}</b> — {u.Def.Floop.Text}", _small);
-                    if (!own) break;
+                    if (!_input.IsMine(u)) break;
 
                     GUILayout.BeginHorizontal();
-                    GUI.enabled = CanMoveNow(u);
-                    if (GUILayout.Button(e.Actions.NextMoveIsFree(u) ? "Hareket (bedava)" : "Hareket")) { CancelMode(); _mode = Mode.Move; }
-                    GUI.enabled = CanAttackNow(u);
-                    if (GUILayout.Button("Saldırı")) { CancelMode(); _mode = Mode.Attack; }
-                    GUI.enabled = u.ControlledBy < 0 && !u.Defended && u.En >= 1;
-                    if (GUILayout.Button("Savun")) Submit(new DefendCommand { UnitId = u.Id }, keepMode: true);
+                    GUI.enabled = _input.CanMoveNow(u);
+                    if (GUILayout.Button(e.Actions.NextMoveIsFree(u) ? "Hareket (bedava)" : "Hareket")) _input.StartMove();
+                    GUI.enabled = _input.CanAttackNow(u);
+                    if (GUILayout.Button("Saldırı")) _input.StartAttack();
+                    GUI.enabled = _input.CanDefendNow(u);
+                    if (GUILayout.Button("Savun")) _input.Defend();
                     GUI.enabled = true;
                     GUILayout.EndHorizontal();
                     GUILayout.BeginHorizontal();
-                    if (u.Def.HasFloop)
+                    if (u.Def.HasFloop && u.ControlledBy < 0)
                     {
-                        string why = e.Floops.CanUse(me, u.Id);
-                        GUI.enabled = why == null;
-                        if (GUILayout.Button($"Floop: {u.Def.Floop.Name}")) StartFloop(u.Id, u.Def.Floop.Kind);
+                        GUI.enabled = e.Floops.CanUse(me, u.Id) == null;
+                        if (GUILayout.Button($"Floop: {u.Def.Floop.Name}")) _input.StartFloop(u.Id);
                         GUI.enabled = true;
                     }
-                    if (u.RetreatAvailable && GUILayout.Button("Geri Çekil (2)")) { CancelMode(); _mode = Mode.Retreat; }
+                    if (u.RetreatAvailable && GUILayout.Button("Geri Çekil (2)")) _input.StartRetreat();
                     GUILayout.EndHorizontal();
                     break;
                 }
@@ -788,7 +446,7 @@ namespace DortGok.Presentation
                         if (myTurn && st.Owner == me)
                         {
                             GUI.enabled = e.Floops.CanUse(me, st.Id) == null;
-                            if (GUILayout.Button($"Floop: {st.Def.Floop.Name}")) StartFloop(st.Id, st.Def.Floop.Kind);
+                            if (GUILayout.Button($"Floop: {st.Def.Floop.Name}")) _input.StartFloop(st.Id);
                             GUI.enabled = true;
                         }
                     }
@@ -798,27 +456,6 @@ namespace DortGok.Presentation
                     GUILayout.Label($"<b>{s.Players[hq.Owner].Name} karargahı</b>", _title);
                     GUILayout.Label($"CAN {hq.Hp}/{hq.MaxHp} · Zırh {e.Stats.HqArmor(hq.Owner)}" + (hq.LastStandActive ? " · Son Siper" : ""), _text);
                     break;
-            }
-        }
-
-        private void StartFloop(int sourceId, FloopKind kind)
-        {
-            CancelMode();
-            switch (kind)
-            {
-                case FloopKind.Gizlen:
-                case FloopKind.Hucum:
-                case FloopKind.OkYagmuru:
-                case FloopKind.VurKac:
-                case FloopKind.Feda:
-                case FloopKind.TakimyildizZirhi:
-                case FloopKind.SisOrtusu:
-                    Submit(new FloopCommand { SourceId = sourceId }, keepMode: true);
-                    return;
-                default:
-                    _mode = Mode.Floop;
-                    _floopSource = sourceId;
-                    return;
             }
         }
 
@@ -832,18 +469,8 @@ namespace DortGok.Presentation
                 int cd = E.Ultis.RemainingCooldown(me, d.Id);
                 string label = $"{d.Name} · {Names.Of(d.Tier)} {E.Ultis.Cost(d)} GE" + (cd > 0 ? $" · bekleme {cd}" : "") + (d.IsNew ? " · yeni" : "");
                 GUI.enabled = why == null;
-                bool active = _mode == Mode.Ulti && _ulti == d.Id;
-                if (GUILayout.Button(active ? "> " + label : label))
-                {
-                    CancelMode();
-                    if (d.Targeting == UltiTargeting.Self || d.Targeting == UltiTargeting.OwnQuadrant)
-                        Submit(new CastUltiCommand { UltiId = d.Id, Target = TargetSpec.None });
-                    else
-                    {
-                        _mode = Mode.Ulti;
-                        _ulti = d.Id;
-                    }
-                }
+                bool active = _input.Mode == InputMode.Ulti && _input.UltiId == d.Id;
+                if (GUILayout.Button(active ? "> " + label : label)) _input.StartUlti(d.Id);
                 GUI.enabled = true;
                 if (active) GUILayout.Label(d.Text, _small);
                 else if (why != null) GUILayout.Label($"<color=#999999>{why}</color>", _small);
@@ -852,70 +479,62 @@ namespace DortGok.Presentation
 
         private void DrawModeOptions(GameState s, int me)
         {
-            if (_mode == Mode.Ulti && _ulti != null)
+            var d = _input.ActiveUlti;
+            if (_input.Mode == InputMode.Ulti && d != null)
             {
-                var d = UltiCatalog.Get(_ulti);
                 if (d.Id == UltiCatalog.Hortum)
                 {
                     GUILayout.BeginHorizontal();
                     GUILayout.Label("Yön:", _small, GUILayout.Width(36));
-                    if (GUILayout.Toggle(_direction == Coord.Up, "↑", GUI.skin.button)) _direction = Coord.Up;
-                    if (GUILayout.Toggle(_direction == Coord.Down, "↓", GUI.skin.button)) _direction = Coord.Down;
-                    if (GUILayout.Toggle(_direction == Coord.Left, "←", GUI.skin.button)) _direction = Coord.Left;
-                    if (GUILayout.Toggle(_direction == Coord.Right, "→", GUI.skin.button)) _direction = Coord.Right;
+                    if (GUILayout.Toggle(_input.Direction == Coord.Up, "↑", GUI.skin.button)) _input.Direction = Coord.Up;
+                    if (GUILayout.Toggle(_input.Direction == Coord.Down, "↓", GUI.skin.button)) _input.Direction = Coord.Down;
+                    if (GUILayout.Toggle(_input.Direction == Coord.Left, "←", GUI.skin.button)) _input.Direction = Coord.Left;
+                    if (GUILayout.Toggle(_input.Direction == Coord.Right, "→", GUI.skin.button)) _input.Direction = Coord.Right;
                     GUILayout.EndHorizontal();
                 }
                 if (d.Targeting == UltiTargeting.TilesEnemyQuadrant)
                 {
                     GUILayout.BeginHorizontal();
-                    _fireRect = GUILayout.Toggle(_fireRect, _fireRect ? "2×3 alan" : "Düz çizgi", GUI.skin.button);
-                    _fireVertical = GUILayout.Toggle(_fireVertical, _fireVertical ? "Dikey" : "Yatay", GUI.skin.button);
+                    _input.FireRect = GUILayout.Toggle(_input.FireRect, _input.FireRect ? "2×3 alan" : "Düz çizgi", GUI.skin.button);
+                    _input.FireVertical = GUILayout.Toggle(_input.FireVertical, _input.FireVertical ? "Dikey" : "Yatay", GUI.skin.button);
                     GUILayout.EndHorizontal();
-                    if (!_fireRect)
+                    if (!_input.FireRect)
                     {
-                        GUILayout.Label($"Uzunluk: {_fireLength}", _small);
-                        _fireLength = Mathf.RoundToInt(GUILayout.HorizontalSlider(_fireLength, 1, 6));
+                        GUILayout.Label($"Uzunluk: {_input.FireLength}", _small);
+                        _input.FireLength = Mathf.RoundToInt(GUILayout.HorizontalSlider(_input.FireLength, 1, 6));
                     }
                 }
                 if (d.Targeting == UltiTargeting.EnemyQuadrantUnits)
                 {
-                    GUILayout.Label($"Seçilen birim: {_tutulma.Count}/2 (CAN ≤ 5, aynı çeyrek)", _small);
-                    GUI.enabled = _tutulma.Count > 0;
-                    if (GUILayout.Button("Tutulma'yı onayla"))
-                    {
-                        var first = s.Units.TryGetValue(_tutulma[0], out var fu) ? fu : null;
-                        if (first != null)
-                            Submit(new CastUltiCommand { UltiId = d.Id, Target = new TargetSpec { Player = Board.QuadrantOf(first.Pos), EntityIds = _tutulma.ToList() } });
-                    }
+                    GUILayout.Label($"Seçilen birim: {_input.TutulmaUnits.Count}/2 (CAN ≤ 5, aynı çeyrek)", _small);
+                    GUI.enabled = _input.TutulmaUnits.Count > 0;
+                    if (GUILayout.Button("Tutulma'yı onayla")) _input.ConfirmTutulma();
                     GUI.enabled = true;
                 }
-                if (GUILayout.Button("İptal (Esc)")) CancelMode();
+                if (GUILayout.Button("İptal (Esc)")) _input.Cancel();
             }
-            else if (_mode == Mode.Floop)
+            else if (_input.Mode == InputMode.Floop)
             {
-                var src = s.GetEntity(_floopSource);
-                var kind = src is Unit u ? u.Def.Floop.Kind : src is Structure st ? st.Def.Floop.Kind : FloopKind.Gizlen;
+                var kind = _input.FloopKindOf(_input.FloopSource);
                 if (kind == FloopKind.CekIt)
                 {
                     GUILayout.BeginHorizontal();
-                    _pull = GUILayout.Toggle(_pull, _pull ? "Çek" : "İt", GUI.skin.button);
-                    if (GUILayout.Toggle(_forceDistance == 1, "1 kare", GUI.skin.button)) _forceDistance = 1;
-                    if (GUILayout.Toggle(_forceDistance == 2, "2 kare", GUI.skin.button)) _forceDistance = 2;
+                    _input.Pull = GUILayout.Toggle(_input.Pull, _input.Pull ? "Çek" : "İt", GUI.skin.button);
+                    if (GUILayout.Toggle(_input.ForceDistance == 1, "1 kare", GUI.skin.button)) _input.ForceDistance = 1;
+                    if (GUILayout.Toggle(_input.ForceDistance == 2, "2 kare", GUI.skin.button)) _input.ForceDistance = 2;
                     GUILayout.EndHorizontal();
                 }
                 if (kind == FloopKind.Gozlem)
                 {
                     var top = E.Floops.PeekTop(me, 3);
-                    GUILayout.Label("Destenin üstündeki kartlardan birini seç:", _small);
                     for (int i = 0; i < top.Count; i++)
-                        if (GUILayout.Button($"{top[i].Def.Name} ({top[i].Def.Cost} AP)"))
-                            Submit(new FloopCommand { SourceId = _floopSource, Target = new TargetSpec { Choice = i } });
+                        if (GUILayout.Button($"{top[i].Def.Name} ({top[i].Def.Cost} AP)")) _input.ChooseGozlem(i);
                 }
-                if (GUILayout.Button("İptal (Esc)")) CancelMode();
+                if (GUILayout.Button("İptal (Esc)")) _input.Cancel();
             }
-            else if (_mode != Mode.None)
+            else if (_input.Mode != InputMode.None)
             {
-                if (GUILayout.Button("İptal (Esc)")) CancelMode();
+                if (GUILayout.Button("İptal (Esc)")) _input.Cancel();
             }
 
             foreach (var fx in s.Effects.Values.Where(f => f.Caster == me && f.Def.Id == EffectCatalog.Hortum).ToList())
@@ -925,8 +544,7 @@ namespace DortGok.Presentation
                 foreach (var (dir, arrow) in new[] { (Coord.Up, "↑"), (Coord.Down, "↓"), (Coord.Left, "←"), (Coord.Right, "→") })
                 {
                     bool on = fx.Direction == dir;
-                    if (GUILayout.Toggle(on, arrow, GUI.skin.button) && !on)
-                        Submit(new SteerTornadoCommand { EffectId = fx.Id, Direction = dir }, keepMode: true);
+                    if (GUILayout.Toggle(on, arrow, GUI.skin.button) && !on) _input.Steer(fx.Id, dir);
                 }
                 GUILayout.EndHorizontal();
             }
@@ -960,15 +578,10 @@ namespace DortGok.Presentation
                               (string.IsNullOrEmpty(d.Text) ? "" : d.Text + "\n") +
                               (d.Floop != null ? $"Floop ({d.Floop.Cost}): {d.Floop.Name}" : "");
                 bool affordable = d.Cost <= p.Ap && s.Phase == Phase.AnaFaz;
-                bool active = _mode == Mode.PlayCard && _card == card.InstanceId;
+                bool active = _input.Mode == InputMode.PlayCard && _input.CardInstance == card.InstanceId;
                 var old = GUI.backgroundColor;
                 GUI.backgroundColor = active ? Palette.PreviewOk : affordable ? Color.white : new Color(0.5f, 0.5f, 0.5f);
-                if (GUI.Button(new Rect(i * (cardW + 6), 0, cardW, cardH), body, _cardStyle) && affordable)
-                {
-                    CancelMode();
-                    _mode = Mode.PlayCard;
-                    _card = card.InstanceId;
-                }
+                if (GUI.Button(new Rect(i * (cardW + 6), 0, cardW, cardH), body, _cardStyle)) _input.SelectCard(card.InstanceId);
                 GUI.backgroundColor = old;
             }
             GUI.EndScrollView();
@@ -995,7 +608,7 @@ namespace DortGok.Presentation
             string winner = s.WinnerSeat >= 0
                 ? string.Join(" + ", s.Players.Where(p => p.Team == s.WinnerTeam).Select(p => p.Name))
                 : "yok";
-            GUI.Label(new Rect(rect.x + 20, rect.y + 20, rect.width - 40, 40), $"<b>Oyun bitti</b>", _title);
+            GUI.Label(new Rect(rect.x + 20, rect.y + 20, rect.width - 40, 40), "<b>Oyun bitti</b>", _title);
             GUI.Label(new Rect(rect.x + 20, rect.y + 55, rect.width - 40, 60), $"Kazanan: <b>{winner}</b> · {s.Round} raund · tohum {_g.CurrentSeed}", _text);
             if (GUI.Button(new Rect(rect.x + 20, rect.y + 120, 180, 36), "Yeni Maç")) _g.NewMatch(_g.Seed);
         }

@@ -45,6 +45,20 @@ Docs/            Kâğıt prototip kartları
 ulti seç → şekli tahtada gezdir, sarı geçerli / kırmızı geçersiz · Esc ya da sağ tık iptal · tekerlek yakınlaştırma.
 Sol panelde her koltuk insan/bot arasında değiştirilebilir; varsayılan: Ay insan, diğerleri bot.
 
+## Unity olmadan oynamak (.NET 10 test istemcisi)
+
+Windows'ta, Unity kurmadan aynı kural motoruyla 2D oynamak için:
+
+```
+dotnet run --project Tools/Playtest
+```
+
+Varsayılan: Ay (sol üst) insan, diğer üç koltuk bot. Sağdaki "İnsan" kutularıyla her koltuğu insana çevirip
+aynı ekranda sırayla oynayabilirsin. Kart seç → vurgulu kareye tıkla · birim seç → yeşil kare hareket, kırmızı kare
+saldırı · ulti seç → fareyi tahtada gezdir (sarı geçerli, kırmızı geçersiz) · Esc ya da sağ tık iptal.
+Kareye gelince altta etkiler, sahibi ve yol hasarı yazar. Tıklama ve hedefleme mantığı Unity HUD'u ile
+ortaktır (`Core/Interaction/InteractionController`). Bu istemci yalnızca test içindir; asıl sunum Unity'dedir.
+
 ## Unity olmadan derleme, test ve simülasyon
 
 .NET 10 SDK gerekir.

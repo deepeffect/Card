@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unity kurulmadan oyunu denemek için 2D masaüstü test istemcisi (Windows).
+    Aynı kural motorunu (Assets/_Game/Core) ve aynı girdi mantığını (InteractionController) kullanır.
+    Asıl sunum GDD'deki gibi Unity'dedir; bu istemci yalnızca test içindir.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>DortGok.Playtest</RootNamespace>
+    <AssemblyName>DortGok.Playtest</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CoreBuild\DortGok.Core.csproj" />
+  </ItemGroup>
+
+</Project>
