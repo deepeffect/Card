@@ -1,0 +1,14 @@
+{
+    "name": "DortGok.Net",
+    "rootNamespace": "DortGok.Net",
+    "references": [ "DortGok.Core" ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": true
+}

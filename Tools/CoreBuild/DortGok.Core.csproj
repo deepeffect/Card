@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unity dışında derleme: Assets/_Game/Core altındaki saf C# çekirdeği aynı dosyalarla derler.
+    Unity ile uyum için netstandard2.1 ve C# 9 kullanılır.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>DortGok.Core</RootNamespace>
+    <AssemblyName>DortGok.Core</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\Assets\_Game\Core\**\*.cs" />
+  </ItemGroup>
+
+</Project>

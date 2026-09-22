@@ -1,0 +1,14 @@
+{
+    "name": "DortGok.Editor",
+    "rootNamespace": "DortGok.EditorTools",
+    "references": [ "DortGok.Core", "DortGok.Data", "DortGok.Presentation" ],
+    "includePlatforms": [ "Editor" ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

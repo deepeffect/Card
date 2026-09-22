@@ -1,0 +1,35 @@
+# Unity
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+sysinfo.txt
+crashlytics-build.properties
+
+# Unity'nin kökte ürettiği IDE projeleri
+/*.csproj
+/*.sln
+/*.slnx
+/*.unityproj
+/*.suo
+/*.user
+/*.userprefs
+/.vs/
+/.idea/
+/.vscode/
+
+# Unity dışı .NET araçları (Tools/)
+Tools/**/bin/
+Tools/**/obj/
+Tools/**/TestResults/
+
+# Üretilen çıktılar
+kartlar.html
